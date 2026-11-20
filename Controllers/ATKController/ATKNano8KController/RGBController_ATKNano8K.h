@@ -22,6 +22,7 @@ enum
     ATK_NANO8K_MODE_REACTIVE,
     ATK_NANO8K_MODE_DPI_BREATHING,
     ATK_NANO8K_MODE_OFF,
+    ATK_NANO8K_MODE_COUNT,
 };
 
 class RGBController_ATKNano8K : public RGBController
@@ -30,15 +31,16 @@ public:
     RGBController_ATKNano8K(ATKNano8KController* controller_ptr);
     ~RGBController_ATKNano8K();
 
-    void DeviceUpdateLEDs();
-    void DeviceUpdateZoneLEDs(int zone);
-    void DeviceUpdateSingleLED(int led);
-    void DeviceUpdateMode();
+    void SetupZones();
+
+    void DeviceUpdateLEDs() override;
+    void DeviceUpdateZoneLEDs(int zone) override;
+    void DeviceUpdateSingleLED(int led) override;
+    void DeviceUpdateMode() override;
 
 private:
-    void SetupZones();
     void LoadDeviceState(const ATKNano8KState& state);
+    void UpdatePreviewColor();
 
     ATKNano8KController*    controller;
-    ATKNano8KLighting       last_lighting;
 };

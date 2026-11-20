@@ -14,7 +14,9 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -28,7 +30,7 @@
 | whose first byte echoes the command.                      |
 \*---------------------------------------------------------*/
 #define ATK_NANO8K_FEATURE_SIZE             9
-#define ATK_NANO8K_INPUT_SIZE               65
+#define ATK_NANO8K_INPUT_SIZE               64
 #define ATK_NANO8K_DPI_STAGES               8
 
 enum
@@ -40,7 +42,8 @@ enum
 };
 
 /*---------------------------------------------------------*\
-| Light modes as the mouse firmware numbers them            |
+| Light modes as the mouse firmware numbers them. ATK HUB   |
+| also knows 5 ("with battery"), not offered for this mouse |
 \*---------------------------------------------------------*/
 enum
 {
@@ -61,6 +64,11 @@ enum
 #define ATK_NANO8K_PALETTE_SIZE             8
 #define ATK_NANO8K_COLOR_INDEX_CYCLE        8
 
+/*---------------------------------------------------------*\
+| A lighting change. Only the fields a mode owns are        |
+| written; the others keep what the mouse already has, so   |
+| e.g. Off does not overwrite the stored brightness.        |
+\*---------------------------------------------------------*/
 struct ATKNano8KLighting
 {
     unsigned char                                   mode;
@@ -68,6 +76,9 @@ struct ATKNano8KLighting
     unsigned char                                   speed;          /* 1 / 3 / 5            */
     unsigned char                                   color_index;
     std::array<RGBColor, ATK_NANO8K_DPI_STAGES>     dpi_colors;
+    bool                                            set_brightness;
+    bool                                            set_speed;
+    bool                                            set_color_index;
     bool                                            set_dpi_colors;
 };
 
@@ -77,6 +88,14 @@ struct ATKNano8KState
     bool                                            linked;
     bool                                            dpi_colors_valid;
     ATKNano8KLighting                               lighting;
+};
+
+enum ATKNano8KResult
+{
+    ATK_NANO8K_RESULT_OK,                   /* Written and confirmed            */
+    ATK_NANO8K_RESULT_NOT_LINKED,           /* Mouse off, asleep or out of range*/
+    ATK_NANO8K_RESULT_UNCONFIRMED,          /* Read-back differs or timed out   */
+    ATK_NANO8K_RESULT_IO_ERROR,             /* Receiver unplugged or failing    */
 };
 
 class ATKNano8KController
@@ -93,32 +112,41 @@ public:
     ATKNano8KState          ReadState();
 
     /*-----------------------------------------------------*\
-    | Queues a lighting change. The mouse keeps its light   |
-    | settings across power cycles, so writes are           |
-    | coalesced (a dragged slider becomes one write) and    |
-    | only what changed is sent. A change made while the    |
-    | mouse is off or asleep is sent once it wakes.         |
+    | Queues a lighting change. The first change after a    |
+    | quiet moment is written at once; changes following    |
+    | it closely are coalesced, so a dragged slider becomes |
+    | one write. A change made while the mouse is off or    |
+    | asleep is written once it wakes, and one that was not |
+    | written yet is flushed when the controller is closed. |
     \*-----------------------------------------------------*/
     void                    SetLighting(const ATKNano8KLighting& lighting);
 
 private:
-    bool                    Transact(unsigned char command, const unsigned char* data, size_t data_len, unsigned char* reply);
-    bool                    Send(unsigned char command, const unsigned char* data, size_t data_len);
-    bool                    ReadConfig(ATKNano8KState& state);
-    bool                    ReadDpiColors(ATKNano8KState& state);
-    bool                    ApplyLighting(const ATKNano8KLighting& lighting);
+    ATKNano8KResult         Transact(unsigned char command, const unsigned char* data, size_t data_len, unsigned char* reply, int min_reply_len);
+    ATKNano8KResult         Send(unsigned char command, const unsigned char* data, size_t data_len);
+    ATKNano8KResult         ReadConfig(ATKNano8KState& state);
+    ATKNano8KResult         ReadDpiColors(ATKNano8KState& state);
+    ATKNano8KResult         ApplyLighting(const ATKNano8KLighting& lighting);
+    std::string             LastHidError();
     void                    WorkerThread();
 
     hid_device*             dev;
     std::string             location;
     std::string             name;
+    std::string             serial;
     std::string             version;
     std::mutex              hid_mutex;
 
-    std::thread             worker;
     std::mutex              pending_mutex;
     std::condition_variable pending_cv;
     bool                    pending_valid;
+    bool                    pending_attempted;
     ATKNano8KLighting       pending;
     std::atomic<bool>       stop;
+
+    /*-----------------------------------------------------*\
+    | Declared last: the worker uses every member above, so |
+    | it is constructed after and destroyed before them     |
+    \*-----------------------------------------------------*/
+    std::thread             worker;
 };

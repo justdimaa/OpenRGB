@@ -9,6 +9,7 @@
 |   SPDX-License-Identifier: GPL-2.0-or-later               |
 \*---------------------------------------------------------*/
 
+#include <hidapi.h>
 #include "DetectionManager.h"
 #include "ATKNano8KController.h"
 #include "RGBController_ATKNano8K.h"
