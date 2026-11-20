@@ -35,14 +35,12 @@ enum
 {
     ATK_NANO8K_CMD_SET_RGB                  = 0x22,
     ATK_NANO8K_CMD_SET_DPI_COLOR            = 0x27,
-    ATK_NANO8K_CMD_GET_MOUSE_INFO           = 0x81,
     ATK_NANO8K_CMD_GET_CONFIG               = 0x82,
-    ATK_NANO8K_CMD_GET_DPI_CONFIG           = 0xA5,
     ATK_NANO8K_CMD_GET_DPI_COLOR            = 0xA7,
 };
 
 /*---------------------------------------------------------*\
-| Light modes as the mouse firmware numbers them           |
+| Light modes as the mouse firmware numbers them            |
 \*---------------------------------------------------------*/
 enum
 {
@@ -51,24 +49,23 @@ enum
     ATK_NANO8K_LIGHT_BREATHING              = 2,
     ATK_NANO8K_LIGHT_NEON                   = 3,
     ATK_NANO8K_LIGHT_REACTIVE               = 4,
-    ATK_NANO8K_LIGHT_WITH_BATTERY           = 5,
     ATK_NANO8K_LIGHT_DPI_BREATHING          = 10,
 };
 
 /*---------------------------------------------------------*\
-| Colour index 0-7 is a fixed palette; index 8 makes the    |
-| light step through the DPI stage colours, which can be    |
-| any RGB value. Writing the same colour to every stage     |
-| therefore gives a steady light in any colour.             |
+| Colour index 0-7 picks a fixed colour; index 8 makes the  |
+| light step through all of them by itself. Only DPI        |
+| Breathing takes free RGB colours: those of the DPI        |
+| stages. Reactive ignores the colour index.                |
 \*---------------------------------------------------------*/
-#define ATK_NANO8K_COLOR_INDEX_DPI          8
 #define ATK_NANO8K_PALETTE_SIZE             8
+#define ATK_NANO8K_COLOR_INDEX_CYCLE        8
 
 struct ATKNano8KLighting
 {
     unsigned char                                   mode;
-    unsigned char                                   brightness;     /* raw: 16 / 127 / 255  */
-    unsigned char                                   speed;          /* raw: 1 / 3 / 5       */
+    unsigned char                                   brightness;     /* 0-255                */
+    unsigned char                                   speed;          /* 1 / 3 / 5            */
     unsigned char                                   color_index;
     std::array<RGBColor, ATK_NANO8K_DPI_STAGES>     dpi_colors;
     bool                                            set_dpi_colors;
@@ -78,14 +75,8 @@ struct ATKNano8KState
 {
     bool                                            config_valid;
     bool                                            linked;
-    ATKNano8KLighting                               lighting;
     bool                                            dpi_colors_valid;
-    unsigned char                                   dpi_count;
-    unsigned char                                   battery;
-    bool                                            mouse_info_valid;
-    std::string                                     mouse_firmware;
-    unsigned char                                   mouse_cid;
-    unsigned char                                   mouse_mid;
+    ATKNano8KLighting                               lighting;
 };
 
 class ATKNano8KController
@@ -103,10 +94,10 @@ public:
 
     /*-----------------------------------------------------*\
     | Queues a lighting change. The mouse keeps its light   |
-    | settings across power cycles, so writes are          |
-    | coalesced (a dragged colour picker becomes one write) |
-    | and only what changed is sent. A change made while    |
-    | the mouse is off or asleep is sent once it wakes.     |
+    | settings across power cycles, so writes are           |
+    | coalesced (a dragged slider becomes one write) and    |
+    | only what changed is sent. A change made while the    |
+    | mouse is off or asleep is sent once it wakes.         |
     \*-----------------------------------------------------*/
     void                    SetLighting(const ATKNano8KLighting& lighting);
 

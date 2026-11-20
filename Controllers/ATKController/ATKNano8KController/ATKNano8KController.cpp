@@ -177,7 +177,6 @@ bool ATKNano8KController::Send(unsigned char command, const unsigned char* data,
 | GetConfigData reply:                                      |
 |   [82][rate][dpi stage][light mode][brightness][speed]    |
 |   [color index][-][battery][link]                         |
-| battery: bit 7 charging, bits 0-6 percent                 |
 | link: 0 when no mouse is reachable (off or asleep)        |
 \*---------------------------------------------------------*/
 bool ATKNano8KController::ReadConfig(ATKNano8KState& state)
@@ -192,7 +191,6 @@ bool ATKNano8KController::ReadConfig(ATKNano8KState& state)
         state.lighting.brightness   = reply[4];
         state.lighting.speed        = reply[5];
         state.lighting.color_index  = reply[6];
-        state.battery               = reply[8] & 0x7F;
         state.linked                = reply[9] != 0;
     }
 
@@ -229,30 +227,6 @@ ATKNano8KState ATKNano8KController::ReadState()
     if(state.config_valid && state.linked)
     {
         ReadDpiColors(state);
-
-        unsigned char reply[ATK_NANO8K_INPUT_SIZE];
-
-        /*-------------------------------------------------*\
-        | GetDpiConfig: [A5][stage count]...                |
-        \*-------------------------------------------------*/
-        if(Transact(ATK_NANO8K_CMD_GET_DPI_CONFIG, nullptr, 0, reply))
-        {
-            state.dpi_count = reply[1];
-        }
-
-        /*-------------------------------------------------*\
-        | GetMouseInfo: [81][ver lo][ver hi][profile][cid]  |
-        | [mid]; the A9 Pro reports cid 2, mid 2            |
-        \*-------------------------------------------------*/
-        if(Transact(ATK_NANO8K_CMD_GET_MOUSE_INFO, nullptr, 0, reply))
-        {
-            char firmware[16];
-            snprintf(firmware, sizeof(firmware), "%X.%02X", reply[2], reply[1]);
-            state.mouse_firmware   = firmware;
-            state.mouse_cid        = reply[4];
-            state.mouse_mid        = reply[5];
-            state.mouse_info_valid = true;
-        }
     }
 
     return(state);

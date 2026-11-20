@@ -9,20 +9,22 @@
 |   SPDX-License-Identifier: GPL-2.0-or-later               |
 \*---------------------------------------------------------*/
 
+#include <algorithm>
 #include <cstdlib>
 #include "RGBController_ATKNano8K.h"
 
+#define ATK_NANO8K_BRIGHTNESS_MAX       255
+
 /*---------------------------------------------------------*\
-| Raw brightness and speed steps used by ATK HUB            |
+| Raw speed steps used by ATK HUB (slow, medium, fast)      |
 \*---------------------------------------------------------*/
-static const unsigned char atk_nano8k_brightness[] = { 16, 127, 255 };
-static const unsigned char atk_nano8k_speed[]      = { 1, 3, 5 };
+static const unsigned char atk_nano8k_speed[]   = { 1, 3, 5 };
 
-#define ATK_NANO8K_BRIGHTNESS_STEPS     (sizeof(atk_nano8k_brightness) / sizeof(atk_nano8k_brightness[0]))
 #define ATK_NANO8K_SPEED_STEPS          (sizeof(atk_nano8k_speed) / sizeof(atk_nano8k_speed[0]))
+#define ATK_NANO8K_SPEED_DEFAULT        1
 
 /*---------------------------------------------------------*\
-| Fixed colours 0-7, as seen on an A9 Pro                   |
+| Fixed colours 0-7 as seen on an A9 Pro                    |
 \*---------------------------------------------------------*/
 static const RGBColor atk_nano8k_palette[ATK_NANO8K_PALETTE_SIZE] =
 {
@@ -32,7 +34,7 @@ static const RGBColor atk_nano8k_palette[ATK_NANO8K_PALETTE_SIZE] =
     ToRGBColor(  0, 255,   0),  /* green        */
     ToRGBColor(  0,   0, 255),  /* blue         */
     ToRGBColor(  0, 255, 255),  /* cyan         */
-    ToRGBColor(255,   0, 160),  /* pink-magenta */
+    ToRGBColor(255,   0, 255),  /* pink-magenta */
     ToRGBColor(255, 255, 255),  /* white        */
 };
 
@@ -51,13 +53,54 @@ static const RGBColor atk_nano8k_default_dpi_colors[ATK_NANO8K_DPI_STAGES] =
     ToRGBColor(255, 255, 255),
 };
 
-static unsigned int NearestStep(unsigned char value, const unsigned char* steps, unsigned int count)
+/*---------------------------------------------------------*\
+| Palette entry closest in hue to a chosen colour. The      |
+| colour is scaled to full intensity first, since the mouse |
+| sets intensity through brightness, not through the colour.|
+\*---------------------------------------------------------*/
+static unsigned char NearestPaletteIndex(RGBColor color)
+{
+    int r   = RGBGetRValue(color);
+    int g   = RGBGetGValue(color);
+    int b   = RGBGetBValue(color);
+    int max = std::max(r, std::max(g, b));
+
+    if(max == 0)
+    {
+        return(ATK_NANO8K_PALETTE_SIZE - 1);
+    }
+
+    r = r * 255 / max;
+    g = g * 255 / max;
+    b = b * 255 / max;
+
+    unsigned char best      = 0;
+    int           best_dist = -1;
+
+    for(unsigned char idx = 0; idx < ATK_NANO8K_PALETTE_SIZE; idx++)
+    {
+        int dr   = r - (int)RGBGetRValue(atk_nano8k_palette[idx]);
+        int dg   = g - (int)RGBGetGValue(atk_nano8k_palette[idx]);
+        int db   = b - (int)RGBGetBValue(atk_nano8k_palette[idx]);
+        int dist = dr * dr + dg * dg + db * db;
+
+        if(best_dist < 0 || dist < best_dist)
+        {
+            best      = idx;
+            best_dist = dist;
+        }
+    }
+
+    return(best);
+}
+
+static unsigned int NearestSpeedStep(unsigned char value)
 {
     unsigned int best = 0;
 
-    for(unsigned int idx = 1; idx < count; idx++)
+    for(unsigned int idx = 1; idx < ATK_NANO8K_SPEED_STEPS; idx++)
     {
-        if(abs((int)steps[idx] - (int)value) < abs((int)steps[best] - (int)value))
+        if(abs((int)atk_nano8k_speed[idx] - (int)value) < abs((int)atk_nano8k_speed[best] - (int)value))
         {
             best = idx;
         }
@@ -76,10 +119,10 @@ static unsigned int NearestStep(unsigned char value, const unsigned char* steps,
     @detectors DetectATKNano8KControllers
     @comment Mice on the ATK 8K Nano Dongle (373B:1178), such as the ATK
         A9 Pro. The mouse stores its lighting itself, so every change
-        is saved on the mouse. Any colour is shown by writing it to the
-        DPI stage colours, so Static, Color Steps, Breathing and Reactive
-        replace the DPI indicator colours; DPI Breathing sets them back.
-        With the light Off, the mouse also hides its low battery warning.
+        is saved on the mouse. Static and Breathing show one of eight
+        fixed colours (the closest to the one chosen), or step through
+        all of them with Random. DPI Breathing takes any colour per DPI
+        stage. Reactive picks its own colours.
 \*-------------------------------------------------------------------*/
 RGBController_ATKNano8K::RGBController_ATKNano8K(ATKNano8KController* controller_ptr)
 {
@@ -96,43 +139,30 @@ RGBController_ATKNano8K::RGBController_ATKNano8K(ATKNano8KController* controller
     mode Static;
     Static.name                     = "Static";
     Static.value                    = ATK_NANO8K_MODE_STATIC;
-    Static.flags                    = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_AUTOMATIC_SAVE;
+    Static.flags                    = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_RANDOM_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_AUTOMATIC_SAVE;
     Static.color_mode               = MODE_COLORS_MODE_SPECIFIC;
     Static.colors_min               = 1;
     Static.colors_max               = 1;
     Static.colors.resize(1, atk_nano8k_palette[0]);
     Static.brightness_min           = 0;
-    Static.brightness_max           = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    Static.brightness               = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
+    Static.brightness_max           = ATK_NANO8K_BRIGHTNESS_MAX;
+    Static.brightness               = ATK_NANO8K_BRIGHTNESS_MAX;
     modes.push_back(Static);
-
-    mode ColorSteps;
-    ColorSteps.name                 = "Color Steps";
-    ColorSteps.value                = ATK_NANO8K_MODE_COLOR_STEPS;
-    ColorSteps.flags                = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_AUTOMATIC_SAVE;
-    ColorSteps.color_mode           = MODE_COLORS_MODE_SPECIFIC;
-    ColorSteps.colors_min           = 1;
-    ColorSteps.colors_max           = ATK_NANO8K_DPI_STAGES;
-    ColorSteps.colors.assign(atk_nano8k_default_dpi_colors, atk_nano8k_default_dpi_colors + 4);
-    ColorSteps.brightness_min       = 0;
-    ColorSteps.brightness_max       = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    ColorSteps.brightness           = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    modes.push_back(ColorSteps);
 
     mode Breathing;
     Breathing.name                  = "Breathing";
     Breathing.value                 = ATK_NANO8K_MODE_BREATHING;
-    Breathing.flags                 = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_HAS_SPEED | MODE_FLAG_AUTOMATIC_SAVE;
+    Breathing.flags                 = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_RANDOM_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_HAS_SPEED | MODE_FLAG_AUTOMATIC_SAVE;
     Breathing.color_mode            = MODE_COLORS_MODE_SPECIFIC;
     Breathing.colors_min            = 1;
-    Breathing.colors_max            = ATK_NANO8K_DPI_STAGES;
+    Breathing.colors_max            = 1;
     Breathing.colors.resize(1, atk_nano8k_palette[0]);
     Breathing.brightness_min        = 0;
-    Breathing.brightness_max        = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    Breathing.brightness            = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
+    Breathing.brightness_max        = ATK_NANO8K_BRIGHTNESS_MAX;
+    Breathing.brightness            = ATK_NANO8K_BRIGHTNESS_MAX;
     Breathing.speed_min             = 0;
     Breathing.speed_max             = ATK_NANO8K_SPEED_STEPS - 1;
-    Breathing.speed                 = 1;
+    Breathing.speed                 = ATK_NANO8K_SPEED_DEFAULT;
     modes.push_back(Breathing);
 
     mode SpectrumCycle;
@@ -141,24 +171,21 @@ RGBController_ATKNano8K::RGBController_ATKNano8K(ATKNano8KController* controller
     SpectrumCycle.flags             = MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_HAS_SPEED | MODE_FLAG_AUTOMATIC_SAVE;
     SpectrumCycle.color_mode        = MODE_COLORS_NONE;
     SpectrumCycle.brightness_min    = 0;
-    SpectrumCycle.brightness_max    = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    SpectrumCycle.brightness        = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
+    SpectrumCycle.brightness_max    = ATK_NANO8K_BRIGHTNESS_MAX;
+    SpectrumCycle.brightness        = ATK_NANO8K_BRIGHTNESS_MAX;
     SpectrumCycle.speed_min         = 0;
     SpectrumCycle.speed_max         = ATK_NANO8K_SPEED_STEPS - 1;
-    SpectrumCycle.speed             = 1;
+    SpectrumCycle.speed             = ATK_NANO8K_SPEED_DEFAULT;
     modes.push_back(SpectrumCycle);
 
     mode Reactive;
     Reactive.name                   = "Reactive";
     Reactive.value                  = ATK_NANO8K_MODE_REACTIVE;
-    Reactive.flags                  = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_AUTOMATIC_SAVE;
-    Reactive.color_mode             = MODE_COLORS_MODE_SPECIFIC;
-    Reactive.colors_min             = 1;
-    Reactive.colors_max             = 1;
-    Reactive.colors.resize(1, atk_nano8k_palette[0]);
+    Reactive.flags                  = MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_AUTOMATIC_SAVE;
+    Reactive.color_mode             = MODE_COLORS_NONE;
     Reactive.brightness_min         = 0;
-    Reactive.brightness_max         = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    Reactive.brightness             = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
+    Reactive.brightness_max         = ATK_NANO8K_BRIGHTNESS_MAX;
+    Reactive.brightness             = ATK_NANO8K_BRIGHTNESS_MAX;
     modes.push_back(Reactive);
 
     mode DpiBreathing;
@@ -170,11 +197,11 @@ RGBController_ATKNano8K::RGBController_ATKNano8K(ATKNano8KController* controller
     DpiBreathing.colors_max         = ATK_NANO8K_DPI_STAGES;
     DpiBreathing.colors.assign(atk_nano8k_default_dpi_colors, atk_nano8k_default_dpi_colors + ATK_NANO8K_DPI_STAGES);
     DpiBreathing.brightness_min     = 0;
-    DpiBreathing.brightness_max     = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
-    DpiBreathing.brightness         = ATK_NANO8K_BRIGHTNESS_STEPS - 1;
+    DpiBreathing.brightness_max     = ATK_NANO8K_BRIGHTNESS_MAX;
+    DpiBreathing.brightness         = ATK_NANO8K_BRIGHTNESS_MAX;
     DpiBreathing.speed_min          = 0;
     DpiBreathing.speed_max          = ATK_NANO8K_SPEED_STEPS - 1;
-    DpiBreathing.speed              = 1;
+    DpiBreathing.speed              = ATK_NANO8K_SPEED_DEFAULT;
     modes.push_back(DpiBreathing);
 
     mode Off;
@@ -186,18 +213,11 @@ RGBController_ATKNano8K::RGBController_ATKNano8K(ATKNano8KController* controller
 
     SetupZones();
 
-    /*-----------------------------------------------------*\
-    | Start from what the mouse currently shows             |
-    \*-----------------------------------------------------*/
     last_lighting                   = {};
     last_lighting.mode              = ATK_NANO8K_LIGHT_STATIC;
-    last_lighting.brightness        = atk_nano8k_brightness[ATK_NANO8K_BRIGHTNESS_STEPS - 1];
-    last_lighting.speed             = atk_nano8k_speed[1];
+    last_lighting.brightness        = ATK_NANO8K_BRIGHTNESS_MAX;
+    last_lighting.speed             = atk_nano8k_speed[ATK_NANO8K_SPEED_DEFAULT];
     last_lighting.color_index       = 0;
-    for(unsigned int stage = 0; stage < ATK_NANO8K_DPI_STAGES; stage++)
-    {
-        last_lighting.dpi_colors[stage] = atk_nano8k_default_dpi_colors[stage];
-    }
 
     active_mode                     = ATK_NANO8K_MODE_STATIC;
 
@@ -229,6 +249,9 @@ void RGBController_ATKNano8K::SetupZones()
     SetupColors();
 }
 
+/*---------------------------------------------------------*\
+| Start from what the mouse currently shows                 |
+\*---------------------------------------------------------*/
 void RGBController_ATKNano8K::LoadDeviceState(const ATKNano8KState& state)
 {
     if(!state.config_valid || !state.linked)
@@ -237,64 +260,17 @@ void RGBController_ATKNano8K::LoadDeviceState(const ATKNano8KState& state)
     }
 
     const ATKNano8KLighting& lighting   = state.lighting;
-    unsigned int brightness_step        = NearestStep(lighting.brightness, atk_nano8k_brightness, ATK_NANO8K_BRIGHTNESS_STEPS);
-    unsigned int speed_step             = NearestStep(lighting.speed, atk_nano8k_speed, ATK_NANO8K_SPEED_STEPS);
-    unsigned int stage_count            = state.dpi_count;
-
-    if(stage_count < 1 || stage_count > ATK_NANO8K_DPI_STAGES)
-    {
-        stage_count = ATK_NANO8K_DPI_STAGES;
-    }
+    bool                     cycle      = lighting.color_index >= ATK_NANO8K_PALETTE_SIZE;
+    RGBColor                 color      = atk_nano8k_palette[cycle ? 0 : lighting.color_index];
 
     last_lighting.mode                  = lighting.mode;
     last_lighting.brightness            = lighting.brightness;
     last_lighting.speed                 = lighting.speed;
     last_lighting.color_index           = lighting.color_index;
 
-    /*-----------------------------------------------------*\
-    | Colours the light shows: the active DPI stage colours |
-    | for index 8, else the fixed palette colour            |
-    \*-----------------------------------------------------*/
-    std::vector<RGBColor> shown;
-    bool all_same = true;
-
     if(state.dpi_colors_valid)
     {
-        last_lighting.dpi_colors = lighting.dpi_colors;
-
-        for(unsigned int stage = 1; stage < stage_count; stage++)
-        {
-            if(lighting.dpi_colors[stage] != lighting.dpi_colors[0])
-            {
-                all_same = false;
-            }
-        }
-
-        /*-------------------------------------------------*\
-        | Stage colours that are all the same were written  |
-        | by Static or Reactive, not chosen as DPI colours: |
-        | keep the factory set for DPI Breathing then       |
-        \*-------------------------------------------------*/
-        if(!all_same || lighting.mode == ATK_NANO8K_LIGHT_DPI_BREATHING)
-        {
-            modes[ATK_NANO8K_MODE_DPI_BREATHING].colors.assign(lighting.dpi_colors.begin(), lighting.dpi_colors.end());
-        }
-    }
-
-    if(lighting.color_index == ATK_NANO8K_COLOR_INDEX_DPI && state.dpi_colors_valid)
-    {
-        if(all_same)
-        {
-            shown.push_back(lighting.dpi_colors[0]);
-        }
-        else
-        {
-            shown.assign(lighting.dpi_colors.begin(), lighting.dpi_colors.begin() + stage_count);
-        }
-    }
-    else
-    {
-        shown.push_back(atk_nano8k_palette[lighting.color_index < ATK_NANO8K_PALETTE_SIZE ? lighting.color_index : 0]);
+        modes[ATK_NANO8K_MODE_DPI_BREATHING].colors.assign(lighting.dpi_colors.begin(), lighting.dpi_colors.end());
     }
 
     unsigned int new_mode;
@@ -307,7 +283,6 @@ void RGBController_ATKNano8K::LoadDeviceState(const ATKNano8KState& state)
 
         case ATK_NANO8K_LIGHT_BREATHING:
             new_mode = ATK_NANO8K_MODE_BREATHING;
-            modes[new_mode].colors = shown;
             break;
 
         case ATK_NANO8K_LIGHT_NEON:
@@ -316,7 +291,6 @@ void RGBController_ATKNano8K::LoadDeviceState(const ATKNano8KState& state)
 
         case ATK_NANO8K_LIGHT_REACTIVE:
             new_mode = ATK_NANO8K_MODE_REACTIVE;
-            modes[new_mode].colors.assign(1, shown[0]);
             break;
 
         case ATK_NANO8K_LIGHT_DPI_BREATHING:
@@ -325,29 +299,26 @@ void RGBController_ATKNano8K::LoadDeviceState(const ATKNano8KState& state)
 
         case ATK_NANO8K_LIGHT_STATIC:
         default:
-            if(shown.size() > 1)
-            {
-                new_mode = ATK_NANO8K_MODE_COLOR_STEPS;
-                modes[new_mode].colors = shown;
-            }
-            else
-            {
-                new_mode = ATK_NANO8K_MODE_STATIC;
-                modes[new_mode].colors.assign(1, shown[0]);
-            }
+            new_mode = ATK_NANO8K_MODE_STATIC;
             break;
+    }
+
+    if(modes[new_mode].flags & MODE_FLAG_HAS_RANDOM_COLOR)
+    {
+        modes[new_mode].color_mode = cycle ? MODE_COLORS_RANDOM : MODE_COLORS_MODE_SPECIFIC;
+        modes[new_mode].colors.assign(1, color);
     }
 
     for(unsigned int mode_idx = 0; mode_idx < modes.size(); mode_idx++)
     {
         if(modes[mode_idx].flags & MODE_FLAG_HAS_BRIGHTNESS)
         {
-            modes[mode_idx].brightness = brightness_step;
+            modes[mode_idx].brightness = lighting.brightness;
         }
 
         if(modes[mode_idx].flags & MODE_FLAG_HAS_SPEED)
         {
-            modes[mode_idx].speed = speed_step;
+            modes[mode_idx].speed = NearestSpeedStep(lighting.speed);
         }
     }
 
@@ -372,39 +343,18 @@ void RGBController_ATKNano8K::DeviceUpdateSingleLED(int /*led*/)
 
 void RGBController_ATKNano8K::DeviceUpdateMode()
 {
-    const mode& current         = modes[active_mode];
+    mode& current               = modes[active_mode];
     ATKNano8KLighting lighting  = last_lighting;
     lighting.set_dpi_colors     = false;
-
-    /*-----------------------------------------------------*\
-    | Spread the chosen colours over the DPI stages; the    |
-    | light steps through them with colour index 8          |
-    \*-----------------------------------------------------*/
-    auto fill_stages = [&lighting](const std::vector<RGBColor>& colors)
-    {
-        for(unsigned int stage = 0; stage < ATK_NANO8K_DPI_STAGES; stage++)
-        {
-            lighting.dpi_colors[stage] = colors.empty() ? atk_nano8k_palette[0] : colors[stage % colors.size()];
-        }
-        lighting.color_index    = ATK_NANO8K_COLOR_INDEX_DPI;
-        lighting.set_dpi_colors = true;
-    };
 
     switch(current.value)
     {
         case ATK_NANO8K_MODE_STATIC:
             lighting.mode = ATK_NANO8K_LIGHT_STATIC;
-            fill_stages(current.colors);
-            break;
-
-        case ATK_NANO8K_MODE_COLOR_STEPS:
-            lighting.mode = ATK_NANO8K_LIGHT_STATIC;
-            fill_stages(current.colors);
             break;
 
         case ATK_NANO8K_MODE_BREATHING:
             lighting.mode = ATK_NANO8K_LIGHT_BREATHING;
-            fill_stages(current.colors);
             break;
 
         case ATK_NANO8K_MODE_SPECTRUM_CYCLE:
@@ -413,12 +363,15 @@ void RGBController_ATKNano8K::DeviceUpdateMode()
 
         case ATK_NANO8K_MODE_REACTIVE:
             lighting.mode = ATK_NANO8K_LIGHT_REACTIVE;
-            fill_stages(current.colors);
             break;
 
         case ATK_NANO8K_MODE_DPI_BREATHING:
             lighting.mode = ATK_NANO8K_LIGHT_DPI_BREATHING;
-            fill_stages(current.colors);
+            for(unsigned int stage = 0; stage < ATK_NANO8K_DPI_STAGES && stage < current.colors.size(); stage++)
+            {
+                lighting.dpi_colors[stage] = current.colors[stage];
+            }
+            lighting.set_dpi_colors = current.colors.size() >= ATK_NANO8K_DPI_STAGES;
             break;
 
         case ATK_NANO8K_MODE_OFF:
@@ -427,9 +380,28 @@ void RGBController_ATKNano8K::DeviceUpdateMode()
             break;
     }
 
-    if((current.flags & MODE_FLAG_HAS_BRIGHTNESS) && current.brightness < ATK_NANO8K_BRIGHTNESS_STEPS)
+    /*-----------------------------------------------------*\
+    | Static and Breathing: one of the fixed colours, or    |
+    | the built-in cycle through all of them for Random.    |
+    | The chosen colour is replaced by the one the mouse    |
+    | shows, so OpenRGB displays what is really on.         |
+    \*-----------------------------------------------------*/
+    if(current.flags & MODE_FLAG_HAS_RANDOM_COLOR)
     {
-        lighting.brightness = atk_nano8k_brightness[current.brightness];
+        if(current.color_mode == MODE_COLORS_RANDOM)
+        {
+            lighting.color_index = ATK_NANO8K_COLOR_INDEX_CYCLE;
+        }
+        else if(!current.colors.empty())
+        {
+            lighting.color_index = NearestPaletteIndex(current.colors[0]);
+            current.colors[0]    = atk_nano8k_palette[lighting.color_index];
+        }
+    }
+
+    if(current.flags & MODE_FLAG_HAS_BRIGHTNESS)
+    {
+        lighting.brightness = (unsigned char)std::min<unsigned int>(current.brightness, ATK_NANO8K_BRIGHTNESS_MAX);
     }
 
     if((current.flags & MODE_FLAG_HAS_SPEED) && current.speed < ATK_NANO8K_SPEED_STEPS)
@@ -437,10 +409,6 @@ void RGBController_ATKNano8K::DeviceUpdateMode()
         lighting.speed = atk_nano8k_speed[current.speed];
     }
 
-    if(lighting.set_dpi_colors)
-    {
-        last_lighting.dpi_colors = lighting.dpi_colors;
-    }
     last_lighting.mode          = lighting.mode;
     last_lighting.brightness    = lighting.brightness;
     last_lighting.speed         = lighting.speed;
